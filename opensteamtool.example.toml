@@ -91,6 +91,13 @@ enabled = false
 # Path to cloud_redirect.dll. Absolute, or relative to the Steam root directory.
 # Defaults to "<Steam>/cloud_redirect.dll" when unset.
 # library = "cloud_redirect.dll"
+#
+# appids to exempt from cloud redirection. They stay unlocked in Lua but their
+# Steam Cloud saves/achievements are left to Steam's own cloud instead of being
+# routed through CloudRedirect. Use this for games you only added to Lua to lift
+# the Family Sharing restriction — you own their cloud through the shared library
+# and don't want a redirected copy.
+# exclude_appids = [1361510, 480]
 
 [remote]
 # Optional metadata mirror. Leave unset to use GitHub with jsDelivr fallback.

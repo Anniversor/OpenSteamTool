@@ -8,6 +8,7 @@
 #include <atomic>
 #include <filesystem>
 #include <mutex>
+#include <unordered_set>
 #include <vector>
 
 namespace CloudRedirectHost {
@@ -70,6 +71,31 @@ namespace {
         if (lib.is_absolute())
             return lib;
         return std::filesystem::path(steamRoot) / lib;
+    }
+
+    // Builds the set of appids to hand to CloudRedirect: every addappid()
+    // game, minus the ones the user exempted via [cloud].exclude_appids.
+    // Exempted appids stay unlocked (they remain in Lua) but their Steam
+    // Cloud RPCs are left untouched so Steam handles them normally — this is
+    // what family-shared games want. Returns the exempted count via outExcluded.
+    std::vector<uint32_t> BuildRedirectedAppIds(size_t* outExcluded) {
+        const Config::CloudSettings cloud = Config::GetCloudSettings();
+        const std::unordered_set<uint32_t> excluded(cloud.excludeAppIds.begin(),
+                                                    cloud.excludeAppIds.end());
+
+        std::vector<AppId_t> depots = LuaConfig::GetAllDepotIds();
+        std::vector<uint32_t> appIds;
+        appIds.reserve(depots.size());
+        size_t skipped = 0;
+        for (AppId_t id : depots) {
+            if (excluded.count(id)) {
+                ++skipped;
+                continue;
+            }
+            appIds.push_back(id);
+        }
+        if (outExcluded) *outExcluded = skipped;
+        return appIds;
     }
 
     template <typename T>
@@ -147,12 +173,14 @@ void Initialize(const char* steamInstallPath) {
         LOG_INFO("CloudRedirect: stats sync registered");
     }
 
-    // Push the current unlocked-app set without re-locking g_mutex.
-    std::vector<AppId_t> depots = LuaConfig::GetAllDepotIds();
-    std::vector<uint32_t> appIds(depots.begin(), depots.end());
+    // Push the current unlocked-app set without re-locking g_mutex,
+    // skipping any appids exempted via [cloud].exclude_appids.
+    size_t excluded = 0;
+    std::vector<uint32_t> appIds = BuildRedirectedAppIds(&excluded);
     g_setApps(appIds.empty() ? nullptr : appIds.data(),
               static_cast<uint32_t>(appIds.size()));
-    LOG_INFO("CloudRedirect: registered {} redirected app(s)", appIds.size());
+    LOG_INFO("CloudRedirect: registered {} redirected app(s), {} exempted",
+             appIds.size(), excluded);
 
     // Vtable hooks let CR handle Cloud RPCs synchronously (slot4 semantics).
     if (g_installVtableHooks) {
@@ -166,11 +194,12 @@ void Initialize(const char* steamInstallPath) {
 void SyncAppSet() {
     if (!g_active.load(std::memory_order_acquire) || !g_setApps) return;
 
-    std::vector<AppId_t> depots = LuaConfig::GetAllDepotIds();
-    std::vector<uint32_t> appIds(depots.begin(), depots.end());
+    size_t excluded = 0;
+    std::vector<uint32_t> appIds = BuildRedirectedAppIds(&excluded);
     g_setApps(appIds.empty() ? nullptr : appIds.data(),
               static_cast<uint32_t>(appIds.size()));
-    LOG_DEBUG("CloudRedirect: re-synced redirected app set ({} app(s))", appIds.size());
+    LOG_DEBUG("CloudRedirect: re-synced redirected app set ({} app(s), {} exempted)",
+              appIds.size(), excluded);
 }
 
 bool IsActive() {

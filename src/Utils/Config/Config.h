@@ -24,6 +24,10 @@ namespace Config {
     struct CloudSettings {
         bool enabled = false;
         std::string library;
+        // appids present in Lua that should NOT be redirected through
+        // CloudRedirect (e.g. family-shared games added only to lift the
+        // sharing restriction). Their Steam Cloud RPCs pass through to Valve.
+        std::vector<uint32_t> excludeAppIds;
     };
 
     struct LoadResult {
@@ -71,5 +75,6 @@ namespace Config {
     // [cloud] - optional Steam Cloud save redirection via CloudRedirect.
     inline bool cloudEnabled = false;
     inline std::string cloudLibrary;
+    inline std::vector<uint32_t> cloudExcludeAppIds;
 
 }
