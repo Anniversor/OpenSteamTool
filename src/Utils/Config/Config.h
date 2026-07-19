@@ -28,6 +28,10 @@ namespace Config {
         // CloudRedirect (e.g. family-shared games added only to lift the
         // sharing restriction). Their Steam Cloud RPCs pass through to Valve.
         std::vector<uint32_t> excludeAppIds;
+        // When true, apps that OpenSteamTool detects as genuinely owned (a real
+        // license, or an active Steam Family Sharing license) are automatically
+        // exempted from redirection so their official Steam Cloud is used.
+        bool excludeOwned = false;
     };
 
     struct LoadResult {
@@ -76,5 +80,6 @@ namespace Config {
     inline bool cloudEnabled = false;
     inline std::string cloudLibrary;
     inline std::vector<uint32_t> cloudExcludeAppIds;
+    inline bool cloudExcludeOwned = false;
 
 }

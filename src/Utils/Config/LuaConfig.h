@@ -11,7 +11,9 @@
 namespace LuaConfig{
     bool HasDepot(AppId_t appId, bool checkOwned=true);
     bool IsOwned(AppId_t appId);
-    void MarkOwned(AppId_t appId);
+    // Records appId as genuinely owned. Returns true only on the first call for
+    // a given appId (the not-owned → owned transition), false if already known.
+    bool MarkOwned(AppId_t appId);
     std::vector<AppId_t> GetAllDepotIds();
     std::vector<uint8> GetDecryptionKey(AppId_t appId);
     uint64_t GetAccessToken(AppId_t appId);

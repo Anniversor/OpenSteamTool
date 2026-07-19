@@ -59,6 +59,7 @@ namespace {
         cloudEnabled           = snapshot.cloud.enabled;
         cloudLibrary           = snapshot.cloud.library;
         cloudExcludeAppIds     = snapshot.cloud.excludeAppIds;
+        cloudExcludeOwned      = snapshot.cloud.excludeOwned;
     }
 
     void ApplyManifestProvider(const std::string& provider) {
@@ -173,6 +174,8 @@ namespace {
                         }
                     }
                 }
+                if (auto val = (*cloud)["exclude_owned"].value<bool>())
+                    snapshot.cloud.excludeOwned = *val;
             }
 
             ApplyManifestProvider(snapshot.manifestProvider);
@@ -256,6 +259,7 @@ namespace {
             cloudEnabled,
             cloudLibrary,
             cloudExcludeAppIds,
+            cloudExcludeOwned,
         };
     }
 

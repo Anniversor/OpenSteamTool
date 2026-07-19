@@ -74,10 +74,14 @@ namespace {
     }
 
     // Builds the set of appids to hand to CloudRedirect: every addappid()
-    // game, minus the ones the user exempted via [cloud].exclude_appids.
-    // Exempted appids stay unlocked (they remain in Lua) but their Steam
-    // Cloud RPCs are left untouched so Steam handles them normally — this is
-    // what family-shared games want. Returns the exempted count via outExcluded.
+    // game, minus the ones that should keep using Steam's own cloud —
+    //   * the user's manual [cloud].exclude_appids list, and
+    //   * (when [cloud].exclude_owned is set) games OpenSteamTool detects as
+    //     genuinely owned, i.e. a real or active Family Sharing license, since
+    //     Steam already syncs their saves officially.
+    // Exempted appids stay unlocked (they remain in Lua); only their Steam
+    // Cloud RPCs are left untouched so Steam handles them normally. Returns the
+    // exempted count via outExcluded.
     std::vector<uint32_t> BuildRedirectedAppIds(size_t* outExcluded) {
         const Config::CloudSettings cloud = Config::GetCloudSettings();
         const std::unordered_set<uint32_t> excluded(cloud.excludeAppIds.begin(),
@@ -88,7 +92,8 @@ namespace {
         appIds.reserve(depots.size());
         size_t skipped = 0;
         for (AppId_t id : depots) {
-            if (excluded.count(id)) {
+            if (excluded.count(id) ||
+                (cloud.excludeOwned && LuaConfig::IsOwned(id))) {
                 ++skipped;
                 continue;
             }
@@ -233,6 +238,15 @@ void NotifyAppRunning(uint32_t appId, bool running) {
 void NotifyStatsStored(uint32_t appId) {
     if (!g_active.load(std::memory_order_acquire) || !g_notifyStatsStored) return;
     g_notifyStatsStored(appId);
+}
+
+void NotifyAppOwned(uint32_t appId) {
+    if (!g_active.load(std::memory_order_acquire)) return;
+    if (!Config::GetCloudSettings().excludeOwned) return;
+    // Newly recognised as owned — re-push the filtered set so this app is
+    // dropped and its saves flow through Steam's official cloud instead.
+    LOG_INFO("CloudRedirect: app {} is owned, exempting from redirection", appId);
+    SyncAppSet();
 }
 
 uint32_t GetAchievements(uint32_t appId, AchievementBlock* out, uint32_t maxBlocks) {

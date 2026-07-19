@@ -2,6 +2,7 @@
 #include "HookMacros.h"
 #include "Hooks_SteamUI.h"
 #include "dllmain.h"
+#include "Utils/CloudRedirect/CloudRedirectHost.h"
 #include "Utils/HookSupport/VehCommon.h"
 #include <unordered_set>
 
@@ -99,8 +100,12 @@ namespace {
 
         if (LuaConfig::HasDepot(appId,false)) {
             if (result && pOwn->ExistInPackageNums > 1) {
-                // Actually owned — record so HasDepot excludes it going forward
-                LuaConfig::MarkOwned(appId);
+                // Actually owned — record so HasDepot excludes it going forward.
+                // On the not-owned → owned transition, let CloudRedirect drop it
+                // from the redirected set (when [cloud].exclude_owned is on) so
+                // its saves use Steam's official cloud.
+                if (LuaConfig::MarkOwned(appId))
+                    CloudRedirectHost::NotifyAppOwned(appId);
                 pOwn->ReleaseState = EAppReleaseState::Released;
             } else {
                 pOwn->PackageId    = kInjectedPackageId;
