@@ -38,6 +38,11 @@ namespace CloudRedirectHost {
     void NotifyAppRunning(uint32_t appId, bool running);
     void NotifyStatsStored(uint32_t appId);
 
+    // Called when an addappid() game is recognised as genuinely owned (real or
+    // Steam Family Sharing license). When [cloud].exclude_owned is set, drops it
+    // from the redirected set so its saves use Steam's own cloud. No-op otherwise.
+    void NotifyAppOwned(uint32_t appId);
+
     struct AchievementBlock {
         uint32_t statId;
         uint32_t bits;

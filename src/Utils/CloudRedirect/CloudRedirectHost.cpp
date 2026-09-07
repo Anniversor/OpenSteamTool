@@ -8,6 +8,7 @@
 #include <atomic>
 #include <filesystem>
 #include <mutex>
+#include <unordered_set>
 #include <vector>
 
 namespace CloudRedirectHost {
@@ -70,6 +71,36 @@ namespace {
         if (lib.is_absolute())
             return lib;
         return std::filesystem::path(steamRoot) / lib;
+    }
+
+    // Builds the set of appids to hand to CloudRedirect: every addappid()
+    // game, minus the ones that should keep using Steam's own cloud —
+    //   * the user's manual [cloud].exclude_appids list, and
+    //   * (when [cloud].exclude_owned is set) games OpenSteamTool detects as
+    //     genuinely owned, i.e. a real or active Family Sharing license, since
+    //     Steam already syncs their saves officially.
+    // Exempted appids stay unlocked (they remain in Lua); only their Steam
+    // Cloud RPCs are left untouched so Steam handles them normally. Returns the
+    // exempted count via outExcluded.
+    std::vector<uint32_t> BuildRedirectedAppIds(size_t* outExcluded) {
+        const Config::CloudSettings cloud = Config::GetCloudSettings();
+        const std::unordered_set<uint32_t> excluded(cloud.excludeAppIds.begin(),
+                                                    cloud.excludeAppIds.end());
+
+        std::vector<AppId_t> depots = LuaConfig::GetAllDepotIds();
+        std::vector<uint32_t> appIds;
+        appIds.reserve(depots.size());
+        size_t skipped = 0;
+        for (AppId_t id : depots) {
+            if (excluded.count(id) ||
+                (cloud.excludeOwned && LuaConfig::IsOwned(id))) {
+                ++skipped;
+                continue;
+            }
+            appIds.push_back(id);
+        }
+        if (outExcluded) *outExcluded = skipped;
+        return appIds;
     }
 
     template <typename T>
@@ -147,12 +178,14 @@ void Initialize(const char* steamInstallPath) {
         LOG_INFO("CloudRedirect: stats sync registered");
     }
 
-    // Push the current unlocked-app set without re-locking g_mutex.
-    std::vector<AppId_t> depots = LuaConfig::GetAllDepotIds();
-    std::vector<uint32_t> appIds(depots.begin(), depots.end());
+    // Push the current unlocked-app set without re-locking g_mutex,
+    // skipping any appids exempted via [cloud].exclude_appids.
+    size_t excluded = 0;
+    std::vector<uint32_t> appIds = BuildRedirectedAppIds(&excluded);
     g_setApps(appIds.empty() ? nullptr : appIds.data(),
               static_cast<uint32_t>(appIds.size()));
-    LOG_INFO("CloudRedirect: registered {} redirected app(s)", appIds.size());
+    LOG_INFO("CloudRedirect: registered {} redirected app(s), {} exempted",
+             appIds.size(), excluded);
 
     // Vtable hooks let CR handle Cloud RPCs synchronously (slot4 semantics).
     if (g_installVtableHooks) {
@@ -166,11 +199,12 @@ void Initialize(const char* steamInstallPath) {
 void SyncAppSet() {
     if (!g_active.load(std::memory_order_acquire) || !g_setApps) return;
 
-    std::vector<AppId_t> depots = LuaConfig::GetAllDepotIds();
-    std::vector<uint32_t> appIds(depots.begin(), depots.end());
+    size_t excluded = 0;
+    std::vector<uint32_t> appIds = BuildRedirectedAppIds(&excluded);
     g_setApps(appIds.empty() ? nullptr : appIds.data(),
               static_cast<uint32_t>(appIds.size()));
-    LOG_DEBUG("CloudRedirect: re-synced redirected app set ({} app(s))", appIds.size());
+    LOG_DEBUG("CloudRedirect: re-synced redirected app set ({} app(s), {} exempted)",
+              appIds.size(), excluded);
 }
 
 bool IsActive() {
@@ -204,6 +238,15 @@ void NotifyAppRunning(uint32_t appId, bool running) {
 void NotifyStatsStored(uint32_t appId) {
     if (!g_active.load(std::memory_order_acquire) || !g_notifyStatsStored) return;
     g_notifyStatsStored(appId);
+}
+
+void NotifyAppOwned(uint32_t appId) {
+    if (!g_active.load(std::memory_order_acquire)) return;
+    if (!Config::GetCloudSettings().excludeOwned) return;
+    // Newly recognised as owned — re-push the filtered set so this app is
+    // dropped and its saves flow through Steam's official cloud instead.
+    LOG_INFO("CloudRedirect: app {} is owned, exempting from redirection", appId);
+    SyncAppSet();
 }
 
 uint32_t GetAchievements(uint32_t appId, AchievementBlock* out, uint32_t maxBlocks) {

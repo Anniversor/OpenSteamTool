@@ -91,6 +91,22 @@ enabled = false
 # Path to cloud_redirect.dll. Absolute, or relative to the Steam root directory.
 # Defaults to "<Steam>/cloud_redirect.dll" when unset.
 # library = "cloud_redirect.dll"
+#
+# appids to exempt from cloud redirection. They stay unlocked in Lua but their
+# Steam Cloud saves/achievements are left to Steam's own cloud instead of being
+# routed through CloudRedirect. Use this for games you only added to Lua to lift
+# the Family Sharing restriction — you own their cloud through the shared library
+# and don't want a redirected copy.
+# exclude_appids = [1361510, 480]
+#
+# Automatically exempt any game OpenSteamTool detects as genuinely owned — you
+# hold a real license, or Steam Family Sharing grants you an active shared
+# license. Steam already syncs those saves/achievements through its own cloud,
+# so they are dropped from CloudRedirect the moment ownership is confirmed. Only
+# "pure Lua" unlocks that Steam does not recognise keep using CloudRedirect.
+# This is driven by Steam's own ownership check, so you don't list appids here.
+# Default false (redirect every addappid() game).
+# exclude_owned = true
 
 [remote]
 # Optional metadata mirror. Leave unset to use GitHub with jsDelivr fallback.

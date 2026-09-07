@@ -1,4 +1,5 @@
 #include "Hook/Hooks_Package.h"
+#include "Utils/CloudRedirect/CloudRedirectHost.h"
 #include "Utils/Config/Config.h"
 #include "Utils/Config/LuaConfig.h"
 #include "Utils/Config/LuaFileWatcher.h"
@@ -76,6 +77,10 @@ void ReloadConfig() {
     if (result.luaPathsChanged) {
         RestartLuaWatcher();
     }
+
+    // Re-push the CloudRedirect app set so edits to [cloud].exclude_appids take
+    // effect without a Steam restart. No-op unless cloud redirection is active.
+    CloudRedirectHost::SyncAppSet();
 }
 
 void WatcherThread() {

@@ -58,6 +58,8 @@ namespace {
         injectLibraryX64       = snapshot.injection.libraryX64;
         cloudEnabled           = snapshot.cloud.enabled;
         cloudLibrary           = snapshot.cloud.library;
+        cloudExcludeAppIds     = snapshot.cloud.excludeAppIds;
+        cloudExcludeOwned      = snapshot.cloud.excludeOwned;
     }
 
     void ApplyManifestProvider(const std::string& provider) {
@@ -164,6 +166,16 @@ namespace {
                     snapshot.cloud.enabled = *val;
                 if (auto val = (*cloud)["library"].value<std::string>())
                     snapshot.cloud.library = *val;
+                if (auto arr = (*cloud)["exclude_appids"].as_array()) {
+                    for (auto& elem : *arr) {
+                        if (auto id = elem.value<int64_t>()) {
+                            if (*id > 0 && *id <= UINT32_MAX)
+                                snapshot.cloud.excludeAppIds.push_back(static_cast<uint32_t>(*id));
+                        }
+                    }
+                }
+                if (auto val = (*cloud)["exclude_owned"].value<bool>())
+                    snapshot.cloud.excludeOwned = *val;
             }
 
             ApplyManifestProvider(snapshot.manifestProvider);
@@ -246,6 +258,8 @@ namespace {
         return {
             cloudEnabled,
             cloudLibrary,
+            cloudExcludeAppIds,
+            cloudExcludeOwned,
         };
     }
 

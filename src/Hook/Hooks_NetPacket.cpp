@@ -27,7 +27,10 @@ namespace {
     constexpr int    kPacketPoolSize = 8;
 
     // ── Incoming (RecvPkt) packet pool ─────────────────────
-    uint8  g_NewBody[kMaxBodySize];
+    // Growable: a response body can be far larger than 64 KB (an achievement
+    // schema with dozens of achievements in every language is ~120 KB), and a
+    // fixed cap meant such a packet was silently left half-rewritten.
+    std::vector<uint8> g_NewBody;
     uint32 g_cbNewBody   = 0;
     uint8  g_NewHdr[kMaxHdrSize];
     uint32 g_cbNewHdr    = 0;
@@ -35,8 +38,23 @@ namespace {
     bool   g_NeedReplaceHdr  = false;
     bool   g_ResizedInPlace = false;
     uint32 g_NewBodySize    = 0;
-    uint8  g_RecvPacketPool[kPacketPoolSize][kMaxPacketSize];
+    std::vector<uint8> g_RecvPacketPool[kPacketPoolSize];
     int    g_RecvPacketPoolIdx = 0;
+    // Storage a slot outgrew. Kept alive forever because a packet Steam has
+    // not consumed yet may still point into it (the old fixed arrays never moved).
+    std::vector<std::vector<uint8>> g_RetiredRecvBuffers;
+
+    // Serialize a modified incoming body into g_NewBody, growing it as needed.
+    template <typename Msg>
+    bool SerializeNewBody(const Msg& msg)
+    {
+        size_t n = msg.ByteSizeLong();
+        g_NewBody.resize(n);
+        if (n && !msg.SerializeToArray(g_NewBody.data(), static_cast<int>(n)))
+            return false;
+        g_cbNewBody = static_cast<uint32>(n);
+        return true;
+    }
 
     // ── Outgoing (BBuildAndAsyncSendFrame) — same pattern ───────
     uint8  g_SendNewBody[kMaxBodySize];
@@ -82,14 +100,28 @@ namespace {
     }
 
     // ── Incoming: replace header and/or body (ring-buffer pool) ──
-    inline void ReplaceRecvPacket(CNetPacket* p,
+    inline bool ReplaceRecvPacket(CNetPacket* p,
                                   const uint8* pNewHdr, uint32 cbNewHdr,
                                   const uint8* pNewBody, uint32 cbNewBody)
     {
         uint32 newSize = sizeof(MsgHdr) + cbNewHdr + cbNewBody;
-        if (newSize > sizeof(g_RecvPacketPool[0])) return;
+        // Never resize a slot that still backs the bytes we are copying from.
+        auto inside = [](const std::vector<uint8>& v, const uint8* ptr) {
+            return !v.empty() && ptr >= v.data() && ptr < v.data() + v.size();
+        };
+        if (inside(g_RecvPacketPool[g_RecvPacketPoolIdx], pNewHdr) ||
+            inside(g_RecvPacketPool[g_RecvPacketPoolIdx], pNewBody))
+            g_RecvPacketPoolIdx = (g_RecvPacketPoolIdx + 1) % kPacketPoolSize;
+        std::vector<uint8>& slot = g_RecvPacketPool[g_RecvPacketPoolIdx];
+        if (slot.capacity() < newSize) {
+            if (!slot.empty())
+                g_RetiredRecvBuffers.push_back(std::move(slot));
+            slot = std::vector<uint8>();
+            slot.reserve(newSize > 256 * 1024 ? newSize : 256 * 1024);
+        }
+        slot.resize(newSize);
 
-        uint8* buf = g_RecvPacketPool[g_RecvPacketPoolIdx];
+        uint8* buf = slot.data();
         const MsgHdr* orig = reinterpret_cast<const MsgHdr*>(p->m_pubData);
         MsgHdr* out = reinterpret_cast<MsgHdr*>(buf);
         out->eMsg         = orig->eMsg;
@@ -99,8 +131,8 @@ namespace {
             memcpy(buf + sizeof(MsgHdr) + cbNewHdr, pNewBody, cbNewBody);
         p->m_pubData = buf;
         p->m_cubData = newSize;
-
         g_RecvPacketPoolIdx = (g_RecvPacketPoolIdx + 1) % kPacketPoolSize;
+        return true;
     }
 
     // ── Outgoing: assemble modified packet (ring-buffer pool) ────
@@ -394,15 +426,10 @@ namespace Hooks_NetPacket_UserStats {
             LOG_ACHIEVEMENT_DEBUG("ClientGetUserStats response: cleared stats/achievements (no CR data for app {})", appId);
         }
 
-        auto newSize = resp.ByteSizeLong();
-        if (newSize > sizeof(g_NewBody)) {
-            LOG_ACHIEVEMENT_WARN("ClientGetUserStats response: modified message too large ({} bytes)", newSize);
+        if (!SerializeNewBody(resp)) {
+            LOG_ACHIEVEMENT_WARN("ClientGetUserStats response: failed to SerializeToArray modified response");
             return false;
         }
-        if (!resp.SerializeToArray(g_NewBody, sizeof(g_NewBody)))
-            return false;
-
-        g_cbNewBody = static_cast<uint32>(newSize);
         g_NeedReplaceBody = true;
         LOG_ACHIEVEMENT_DEBUG("ClientGetUserStats response: modified body:\n{}", resp.DebugString());
         return true;
@@ -441,19 +468,13 @@ namespace Hooks_NetPacket_ETicket {
 
         resp.set_eresult(k_EResultOK);
 
-        auto encSize = resp.ByteSizeLong();
-        if (encSize > sizeof(g_NewBody)) {
-            LOG_NETPACKET_WARN("ClientRequestEncryptedAppTicketResponse: modified message too large");
-            return;
-        }
-        if (!resp.SerializeToArray(g_NewBody, sizeof(g_NewBody))) {
+        if (!SerializeNewBody(resp)) {
             LOG_NETPACKET_WARN("ClientRequestEncryptedAppTicketResponse: failed to SerializeToArray modified response");
             return;
         }
         
         LOG_NETPACKET_DEBUG("ClientRequestEncryptedAppTicketResponse: modified body:\n{}", resp.DebugString());
 
-        g_cbNewBody = static_cast<uint32>(encSize);
         g_NeedReplaceBody = true;
     }
 
@@ -581,10 +602,8 @@ namespace Hooks_NetPacket_Manifest {
         CContentServerDirectory_GetManifestRequestCode_Response resp;
         resp.set_manifest_request_code(code);
 
-        g_cbNewBody = static_cast<uint32>(resp.ByteSizeLong());
-        if (g_cbNewBody > kMaxBodySize || !resp.SerializeToArray(g_NewBody, kMaxBodySize)){
-            LOG_MANIFEST_WARN("GetManifestRequestCode recv: failed to SerializeToArray modified body,"
-                "g_cbNewBody:{}, kMaxBodySize:{}", g_cbNewBody, kMaxBodySize);
+        if (!SerializeNewBody(resp)) {
+            LOG_MANIFEST_WARN("GetManifestRequestCode recv: failed to SerializeToArray modified body");
             return;
         }
         g_NeedReplaceBody = true;
@@ -850,12 +869,7 @@ namespace Hooks_NetPacket_RichPresence {
         if (g_PlayingAppId == 0) return false;
 
         ApplyGameFields(msg, selfEntry, g_PlayingAppId);
-        g_cbNewBody = static_cast<uint32>(msg.ByteSizeLong());
-        if (g_cbNewBody > kMaxBodySize) {
-            LOG_RICHPRESENCE_WARN("In-place patch too large ({} bytes)", g_cbNewBody);
-            return false;
-        }
-        if (!msg.SerializeToArray(g_NewBody, kMaxBodySize)) {
+        if (!SerializeNewBody(msg)) {
             LOG_RICHPRESENCE_WARN("In-place patch SerializeToArray failed");
             return false;
         }
@@ -1334,18 +1348,35 @@ namespace {
             g_ResizedInPlace = false;
             RecvJob(eMsg, pBody, cbBody, pHdr, cbHdr);
 
-            if (g_ResizedInPlace && g_NeedReplaceHdr) {
-                // Body shrunk in-place + header changed -> full replace via pool
-                ReplaceRecvPacket(pPacket,
-                    g_NewHdr, g_cbNewHdr,
-                    pBody, g_NewBodySize);
-            } else if (g_ResizedInPlace) {
-                pPacket->m_cubData = sizeof(MsgHdr) + cbHdr + g_NewBodySize;
+            if (g_ResizedInPlace) {
+                // The body was re-serialized in place (it can only have shrunk).
+                // Finish without the pool: a header that is not longer than the
+                // old one goes in place too and the body slides up behind it.
+                // Whatever happens, the packet length must be cut to the new
+                // body, or Steam parses the stale tail of the old body as
+                // extra fields (a 0x1a there overrode a whole 120 KB schema).
+                uint8* base = pPacket->m_pubData;
+                MsgHdr* mh = reinterpret_cast<MsgHdr*>(base);
+                if (g_NeedReplaceHdr && g_cbNewHdr <= cbHdr) {
+                    uint8* body = base + sizeof(MsgHdr) + cbHdr;
+                    if (g_cbNewHdr < cbHdr)
+                        memmove(base + sizeof(MsgHdr) + g_cbNewHdr, body, g_NewBodySize);
+                    memcpy(base + sizeof(MsgHdr), g_NewHdr, g_cbNewHdr);
+                    mh->headerLength = g_cbNewHdr;
+                    pPacket->m_cubData = sizeof(MsgHdr) + g_cbNewHdr + g_NewBodySize;
+                } else if (g_NeedReplaceHdr &&
+                           ReplaceRecvPacket(pPacket, g_NewHdr, g_cbNewHdr, pBody, g_NewBodySize)) {
+                    // Longer header: rebuilt in a pool slot.
+                } else {
+                    if (g_NeedReplaceHdr)
+                        LOG_NETPACKET_WARN("RecvPkt: could not apply the modified header, keeping the original");
+                    pPacket->m_cubData = sizeof(MsgHdr) + cbHdr + g_NewBodySize;
+                }
             } else if (g_NeedReplaceHdr || g_NeedReplaceBody) {
                 ReplaceRecvPacket(pPacket,
                     g_NeedReplaceHdr  ? g_NewHdr  : pHdr,
                     g_NeedReplaceHdr  ? g_cbNewHdr : cbHdr,
-                    g_NeedReplaceBody ? g_NewBody : pBody,
+                    g_NeedReplaceBody ? g_NewBody.data() : pBody,
                     g_NeedReplaceBody ? g_cbNewBody : cbBody);
             }
         }

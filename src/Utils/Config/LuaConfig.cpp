@@ -471,11 +471,13 @@ namespace LuaConfig{
         return OwnedAppIdSet.count(AppId);
     }
 
-    void MarkOwned(AppId_t AppId) {
+    bool MarkOwned(AppId_t AppId) {
         if(!OwnedAppIdSet.count(AppId)) {
             LOG_PACKAGE_INFO("Marking app {} as owned", AppId);
             OwnedAppIdSet.insert(AppId);
+            return true;
         }
+        return false;
     }
 
     std::vector<AppId_t> GetAllDepotIds() {
